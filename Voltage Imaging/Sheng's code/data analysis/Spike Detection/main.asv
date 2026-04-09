@@ -1,0 +1,15 @@
+frame_rate = 800;
+clear traces;
+for i = 1:length(neuron)
+   traces(:,i) = neuron{i}.raw_trace;
+end
+
+result = spike_detect_SNR_v3b(-traces, frame_rate);
+
+invalidIdx = [];
+for i = 
+
+plot_results(result, neuron, meanImage, frame_rate);
+
+
+

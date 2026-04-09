@@ -1,0 +1,107 @@
+dataFiles = uigetdir2('G:/Recordings/');
+sessions = numel(dataFiles);
+for k = 1:length(dataFiles)
+    load(dataFiles{k});
+
+
+    N = length(neuron);
+    traces = zeros(length(neuron{1}.raw_trace), N);
+    session_length = length(neuron{1}.raw_trace);
+    photons = traces;
+    ROIs = {};
+    baseline = [];pixels = [];
+    for i = 1:N
+        traces(:, i) = neuron{i}.raw_trace;
+        ROIs{end+1} = neuron{i}.mask;
+        pixels(:, i) = sum(neuron{i}.mask, 'all');
+
+        baseline(:,i) = fastsmooth(traces(:,i),100,1,1);
+        baseline(:,i) = max(baseline(:,i),traces(:,i));
+        baseline(:,i) = fastsmooth(baseline(:,i),1000,1,1);
+        %baseline(:,i) = fastsmooth(traces(:,i),1000,1,1);
+    end
+    result = spike_detect_SNR_v4(traces.*((-1)^(invert)), frame_rate, snr_thresh);
+
+    if mod(k, 2) == 1 || mod(k, 2) == 0
+        traces  = (traces- 20).*0.793.*pixels;
+        baseline  = (baseline- 20).*0.793.*pixels;
+    else
+        traces = (traces - 100).*0.264.*pixels;
+        baseline = (baseline - 100).*0.264.*pixels;
+    end
+
+    if k == 1
+        resultConcat = result;
+        resultConcat.orig_trace = result.orig_trace./result.trace_noise;
+        resultConcat.raw_trace = traces';
+        resultConcat.df_trace = (traces./baseline)';
+
+    else
+        resultConcat.orig_trace = cat(2, resultConcat.orig_trace, result.orig_trace./result.trace_noise);
+        resultConcat.raw_trace = cat(2, resultConcat.raw_trace, traces');
+        resultConcat.df_trace = cat(2, resultConcat.df_trace, (traces./baseline)');
+    end
+    
+
+end
+
+
+%%
+figure;
+signal_adj = 12;
+%for ind=1:size(result.orig_trace,1)
+offset = 0;
+for ind=[23 24 25 29]
+% Plots the trace as the signal/noise divide by some factor
+offset
+plot( resultConcat.orig_trace(ind,:)./signal_adj + offset,'k','LineWidth',0.1);
+hold on;
+end
+xlim([0 sessions*session_length]);ylim([-0 ind+1])
+
+for div = 1:sessions
+    plot([1 1].*div.*session_length,[-0 ind+1],'Color',[0.7 0.7 0.7], 'LineWidth',1.5); hold on;
+end
+
+%%
+figure;
+
+ind = 15;
+plot( resultConcat.raw_trace(ind,:),'k','LineWidth',0.1);
+
+xlim([0 sessions*session_length]);%ylim([0 600000])
+
+% for div = 1:4
+%     plot([1 1].*div.*session_length,[-0 ind+1],'Color',[0.7 0.7 0.7], 'LineWidth',1.5);hold on;
+% end
+
+%%
+figure;
+
+plotIdx = 1;
+for ind = [23 24 25 29]
+    subplot(1, 1, plotIdx); plotIdx = plotIdx + 1;
+    plot( resultConcat.df_trace(ind,:),'k','LineWidth',0.1); hold on;
+    
+    for div = 1:sessions
+        plot([1 1].*div.*session_length,[-0 1.2],'Color',[0.7 0.7 0.7], 'LineWidth',1.5);hold on;
+    end
+
+    xlim([0 sessions*session_length]);ylim([0.7 1.2])
+
+end
+
+%%
+figure;
+signal_adj = 6;
+for ind=15
+% Plots the trace as the signal/noise divide by some factor
+plot( resultConcat.orig_trace(ind,:)./signal_adj  ,'k','LineWidth',0.1);
+hold on;
+end
+xlim([0 sessions*session_length]);ylim([-0.5 1.5])
+
+for div = 1:sessions
+    plot([1 1].*div.*session_length,[-0 ind+1],'Color',[0.7 0.7 0.7], 'LineWidth',1.5); hold on;
+end
+

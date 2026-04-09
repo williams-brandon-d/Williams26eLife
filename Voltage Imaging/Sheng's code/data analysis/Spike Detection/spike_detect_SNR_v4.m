@@ -1,0 +1,247 @@
+function  result=spike_detect_SNR_v4(traces, frame_rate, snr_thresh)
+
+    FS = frame_rate; % sampling frequency
+
+    event_parameter.pre_peak_time_point = 3; % in ms
+    event_parameter.post_peak_time_point = 3; % in ms
+    event_parameter.complex_spike_window = 12; % in ms
+    event_parameter.event_moving_window = 101; % data points
+       
+    event_parameter.noise_threshold = 7;
+    event_parameter.noise_pre_extension = 0; % data points
+    event_parameter.noise_post_extension = 3; % data points
+    event_parameter.noise_extension = 3; % data points
+
+    event_parameter.noise_moving_window = 2; % std noise moving window size in seconds
+
+    event_parameter.subthreshold_lowpass_window = 0.02; % low pass subthreshold 20ms window
+    
+    event_parameter.snr_threshold = snr_thresh;
+    event_parameter.down_threshold = 4;
+    event_parameter.up_threshold = 4;
+    event_parameter.moving_window = round(FS*0.4);  % smoothed trace +/- 200 ms window
+
+
+    % convert to data points
+    event_parameter.pre_peak_time_point = ceil(FS/1000*event_parameter.pre_peak_time_point); 
+    event_parameter.post_peak_time_point = ceil(FS/1000*event_parameter.post_peak_time_point);
+    event_parameter.complex_spike_window = ceil(FS/1000*event_parameter.complex_spike_window);
+    
+result=[];
+for neuron=1:size(traces,2)
+
+    event.idx=[];
+    event.amplitude=[];
+    event.snr=[];
+    
+    current_traceOrig = traces(:,neuron);
+    current_trace = current_traceOrig - fastsmooth(current_traceOrig,FS*1,1,1); 
+    %smoothed_trace = fastsmooth(current_trace,round(FS/16.67),1,1);
+    smoothed_trace = fastsmooth(current_trace,round(FS/50),1,1);
+    f_trace= current_trace - smoothed_trace; % high pass at 16.67 Hz
+         
+    u_f_trace = get_upper_trace(f_trace,event_parameter.moving_window); % upper half trace
+    l_f_trace = get_lower_trace(f_trace,event_parameter.moving_window); % lower half trace
+    
+    d_u_f_trace = diff(u_f_trace);
+    d_u_f_trace = [0;d_u_f_trace];
+
+    d_l_f_trace = diff(l_f_trace);
+    d_l_f_trace = [0;d_l_f_trace];
+            
+    %current_trace_noise = 2*std(l_f_trace);   % baseline fluctuation
+    current_trace_noise = 2.*movstd(l_f_trace, FS * event_parameter.noise_moving_window);
+    
+%%%%%%%%%%%
+    event_parameter.up_threshold_value = event_parameter.up_threshold*movstd(d_l_f_trace, FS*event_parameter.noise_moving_window);
+    event_parameter.down_threshold_value = event_parameter.down_threshold*movstd(d_l_f_trace, FS*event_parameter.noise_moving_window);
+
+    event.event_parameter.up_threshold_value = event_parameter.up_threshold_value;           
+    event.event_parameter.down_threshold_value = event_parameter.down_threshold_value;
+    
+
+    pre_d_trace = d_u_f_trace;
+    if event_parameter.pre_peak_time_point>0
+        for idx=1:event_parameter.pre_peak_time_point
+            shifted_d_trace = [zeros(idx,1);d_u_f_trace(1:end-idx)];
+            shifted_d_trace(shifted_d_trace<0) = 0;
+            pre_d_trace = pre_d_trace+shifted_d_trace;
+        end
+    end
+            
+    post_d_trace = d_u_f_trace;
+    if event_parameter.post_peak_time_point>0
+        for idx=1:event_parameter.post_peak_time_point
+            shifted_d_trace = [d_u_f_trace(idx+1:end);zeros(idx,1)];
+            shifted_d_trace(shifted_d_trace>0) = 0;
+            post_d_trace = post_d_trace+shifted_d_trace;
+        end
+    end
+
+%%%%%%%%%%%%%
+ trace_val = pre_d_trace;
+
+ up_idx_list = find(d_u_f_trace > (movmean(d_u_f_trace, FS * event_parameter.noise_moving_window) + 0.8.*event_parameter.up_threshold_value) ... 
+        & current_trace > movmean(current_trace, FS*0.2) + current_trace_noise * 3);
+        %& current_trace > movstd(current_trace, FS*event_parameter.noise_moving_window) * 2);
+        %& current_trace > movmean(current_trace, FS*0.2) + movstd(current_trace, FS*event_parameter.noise_moving_window) * 3); % <-- Use this one
+lower_threshold_trace = smoothed_trace + movmean(l_f_trace, FS * event_parameter.noise_moving_window)*1 - movstd(l_f_trace, FS * event_parameter.noise_moving_window);
+
+ for up_idx=up_idx_list'
+
+    if up_idx > event_parameter.pre_peak_time_point && ...
+            (up_idx+event_parameter.post_peak_time_point) <= length(d_u_f_trace) && ...
+            d_u_f_trace(up_idx)>0 
+        
+        peak_intensity = current_trace(up_idx);
+        pre_peak_intensity = current_trace(up_idx - event_parameter.pre_peak_time_point:up_idx-1);
+        pre_peak_intensity(pre_peak_intensity < lower_threshold_trace(up_idx)) = lower_threshold_trace(up_idx);
+        post_peak_intensity = current_trace(up_idx + 1 : up_idx + event_parameter.post_peak_time_point);
+        peak_V = trace_val(up_idx);
+        
+        % find actual peaks
+        valnear= find(abs( up_idx- up_idx_list) <= 1 &   abs( up_idx- up_idx_list)>0);
+        if isempty(valnear)
+            vthres=0; 
+        else  
+            vthres=max(trace_val(up_idx_list(valnear)));
+        end
+
+        % if previously detected spikes within a window, reduce snr
+        % detection threshold
+        valnear= find(up_idx - event.idx <= event_parameter.complex_spike_window);
+        if isempty(valnear)
+            snr_thresh_scaling = 1; 
+        else  
+            snr_thresh_scaling = 0.6;
+        end        
+
+        current_signal_intensity = max(peak_intensity - pre_peak_intensity);
+        current_snr = current_signal_intensity/current_trace_noise(up_idx);
+        post_signal_decrease = peak_intensity - post_peak_intensity;
+        
+        if peak_V > vthres &&...
+                current_snr >= event_parameter.snr_threshold*snr_thresh_scaling && ...
+                post_peak_intensity(1) > lower_threshold_trace(up_idx + 1)
+                %sum(post_signal_decrease(1) > current_signal_intensity.*2) == 0
+                
+            pre_peak_intensity = current_trace(up_idx-event_parameter.pre_peak_time_point:up_idx-1);
+            current_signal_intensity = max(peak_intensity - pre_peak_intensity);
+            current_snr = current_signal_intensity/current_trace_noise(up_idx);
+
+            event.idx(end + 1) = up_idx;
+            event.amplitude(end + 1) =  current_signal_intensity;
+            event.snr(end + 1) = current_snr;
+        end
+    end
+
+    spike_interval = diff(event.idx);
+    single_spike_idx = find(spike_interval > FS*0.1 & circshift(spike_interval, 1) > FS*0.1);
+    low_snr_spike_idx = find(event.snr < event_parameter.snr_threshold * 1.5);
+    invalid_spike_idx = intersect(single_spike_idx, low_snr_spike_idx);
+    event.idx(invalid_spike_idx) = [];
+    event.amplitude(invalid_spike_idx) = [];
+    event.snr(invalid_spike_idx) = [];
+
+
+ end
+
+event.roaster = zeros(size(current_trace));
+event.roaster(event.idx) = 1;   
+event.roaster2 = zeros(size(current_trace));
+event.roaster2(up_idx_list) = 1;  
+event.trace_noise = current_trace_noise;
+event.snr_threshold = event_parameter.snr_threshold;
+
+% create subthreshold trace by removing spikes
+tracews = current_traceOrig; 
+if ~isempty(event.idx)
+    spikeWindow = [-round(FS/1000*1): round(FS/1000*2)]'; % window size around each spike, 1 ms pre spike and 2 ms post spike
+    spikeIdx = event.idx + spikeWindow; spikeIdx = spikeIdx(:);
+    spikeIdx(spikeIdx< 1 | spikeIdx > length(current_trace)) = []; % remove invalid spikes
+    tracews(spikeIdx) = nan;
+    subtrehsoldWindow = 10;  % +/- 5 ms averaging for subtreshold
+    tracews = movmean(tracews, round(FS/1000*subtrehsoldWindow),'omitnan');
+    while ~ isempty(find(isnan(tracews)))
+        tracews = fillmissing(tracews, 'movmean', round(FS/1000*subtrehsoldWindow));
+    end
+end
+
+% gather results
+result.trace_raw(neuron,:) = current_traceOrig;
+result.orig_trace(neuron,:) = current_trace;
+result.trace_spikeRemoved(neuron,:) = tracews;
+result.trace_baseline(neuron,:) = fastsmooth(tracews, FS, 1, 1);
+
+
+result.roaster(neuron,:) = event.roaster;
+result.roaster2(neuron, :) = event.roaster2;
+result.spike_snr{neuron,1} =  event.snr;
+result.spike_amplitude{neuron,1} = event.amplitude;
+result.spike_idx{neuron,1} =  event.idx;
+result.trace_noise(neuron,:)= event.trace_noise;
+
+% calculate relative amplitude
+event.spike_df = zeros(size(event.idx));
+for i = 1:numel(event.idx)
+    event.spike_df(i) = event.amplitude(i)./result.trace_baseline(neuron,event.idx(i));
+end
+
+result.spike_df{neuron, 1} = event.spike_df;
+
+% calculate subthreshold trace
+result.trace_subthreshold(neuron,:) = result.trace_spikeRemoved(neuron,:) - result.trace_baseline(neuron,:);
+result.trace_subthreshold(neuron,:) = fastsmooth(result.trace_subthreshold(neuron,:), round(FS*event_parameter.subthreshold_lowpass_window), 1, 1); % low pass with 20 ms window size (50 Hz)
+
+end
+end
+
+
+
+
+function lower_trace = get_lower_trace(current_trace,trace_moving_window)
+
+    m_trace = movmean(current_trace,trace_moving_window);
+    lower_trace = current_trace;
+    % replace the part below moving average with moving average
+    %idx = find(lower_trace>m_trace);
+    %lower_trace(idx)=m_trace(idx);
+    lower_trace = min(lower_trace, m_trace);
+end
+
+
+function upper_trace = get_upper_trace(current_trace,trace_moving_window)
+
+    m_trace = movmean(current_trace,trace_moving_window);
+    upper_trace = current_trace;
+    % replace the part below moving average with moving average
+    %idx = find(upper_trace<m_trace);
+    %upper_trace(idx)=m_trace(idx);
+    upper_trace = max(upper_trace, m_trace);
+end
+
+function noise_idx_list = find_noise_idx(current_trace,trace_moving_window,noise_moving_window,noise_threshold,noise_extension)
+
+    m_trace = movmean(current_trace,trace_moving_window);
+    lower_current_trace = current_trace;
+    lower_current_trace = min(lower_current_trace, m_trace);
+
+    movstd_lower_current_trace = movstd(lower_current_trace,noise_moving_window);
+    noise_idx_list = find(isoutlier(movstd_lower_current_trace,'gesd')==1);
+
+    % connect noise index
+    noise_idx_list = sort(noise_idx_list);
+    d_noise_idx_list = diff(noise_idx_list);
+    noise_extension_idx = find(d_noise_idx_list>1 & d_noise_idx_list<noise_extension);
+    if ~isempty(noise_extension_idx)
+        for idx=1:numel(noise_extension_idx)
+            current_idx = noise_extension_idx(idx);
+            noise_idx_list = cat(1,noise_idx_list,[noise_idx_list(current_idx):noise_idx_list(current_idx+1)]');
+        end
+    end
+
+    noise_idx_list = unique(noise_idx_list);
+
+end
+
+
